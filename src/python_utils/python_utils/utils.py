@@ -18,7 +18,7 @@
 
 
 def get_workspace_root():
-    workspace_installation_root = os.environ.get('COLCON_PREFIX_PATH', '').split(os.pathsep)[0]
-    workspace_root = os.path.abspath(os.path.join(workspace_installation_root, '..'))
+    workspace_root = '/home/bdlim/workspaces/factr_teleop_ws/src/factr_teleop'
+
     return workspace_root
 
