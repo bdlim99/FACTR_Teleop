@@ -16,17 +16,18 @@
 # limitations under the License.
 # ---------------------------------------------------------------------------
 
-import os
-import time
-import yaml
-import subprocess
-import numpy as np
-import pinocchio as pin
 from abc import ABC, abstractmethod
-
+import pinocchio as pin
+import numpy as np
+from omegaconf import OmegaConf
+import os
 from rclpy.node import Node
-from python_utils.utils import get_workspace_root
+import subprocess
+import sys
+import time
+
 from factr_teleop.dynamixel.driver import DynamixelDriver
+from python_utils.utils import get_workspace_root
 
 
 def find_ttyusb(port_name):
@@ -67,11 +68,17 @@ class FACTRTeleop(Node, ABC):
         super().__init__('factr_teleop')
 
         config_file_name = self.declare_parameter('config_file', '').get_parameter_value().string_value
-        config_path = os.path.join(get_workspace_root(), f"src/factr_teleop/factr_teleop/configs/{config_file_name}")
-        with open(config_path, 'r') as config_file:
-            self.config = yaml.safe_load(config_file)
-        
-        self.name = self.config["name"]
+
+        base_config_path = os.path.join(get_workspace_root(), "src/factr_teleop/factr_teleop/configs/base_config.yaml")
+        custom_config_path = os.path.join(get_workspace_root(), f"src/factr_teleop/factr_teleop/configs/{config_file_name}")
+
+        with open(base_config_path, 'r') as base_config_file:
+            base_config = OmegaConf.load(base_config_file)
+        with open(custom_config_path, 'r') as custom_config_file:
+            custom_config = OmegaConf.load(custom_config_file)
+
+        self.config = OmegaConf.merge(base_config, custom_config)
+
         self.dt = 1 / self.config["controller"]["frequency"]
         
         self._prepare_dynamixel()
@@ -84,6 +91,7 @@ class FACTRTeleop(Node, ABC):
         self.arm_joint_limits_min = np.array(self.config["arm_teleop"]["arm_joint_limits_min"]) + self.safety_margin
         self.calibration_joint_pos = np.array(self.config["arm_teleop"]["initialization"]["calibration_joint_pos"])
         self.initial_match_joint_pos = np.array(self.config["arm_teleop"]["initialization"]["initial_match_joint_pos"])
+        self.match_threshold = self.config["arm_teleop"]["initialization"]["match_threshold"]
         assert self.num_arm_joints == len(self.arm_joint_limits_max) == len(self.arm_joint_limits_min), \
             "num_arm_joints and the length of arm joint limits must be the same"
         assert self.num_arm_joints == len(self.calibration_joint_pos) == len(self.initial_match_joint_pos), \
@@ -112,9 +120,12 @@ class FACTRTeleop(Node, ABC):
         self.null_space_kd = self.config["controller"]["null_space_regulation"]["kd"]
         # torque feedback
         self.enable_torque_feedback = self.config["controller"]["torque_feedback"]["enable"]
-        self.torque_feedback_gain = self.config["controller"]["torque_feedback"]["gain"]
-        self.torque_feedback_motor_scalar = self.config["controller"]["torque_feedback"]["motor_scalar"]
-        self.torque_feedback_damping = self.config["controller"]["torque_feedback"]["damping"]
+
+        if self.enable_torque_feedback:
+            self.torque_feedback_gain = self.config["controller"]["torque_feedback"]["gain"]
+            self.torque_feedback_motor_scalar = self.config["controller"]["torque_feedback"]["motor_scalar"]
+            self.torque_feedback_damping = self.config["controller"]["torque_feedback"]["damping"]
+
         # gripper feedback
         self.enable_gripper_feedback = self.config["controller"]["gripper_feedback"]["enable"]
         
@@ -223,30 +234,87 @@ class FACTRTeleop(Node, ABC):
 
         self.joint_offsets = np.asarray(self.joint_offsets)
         if verbose:
-            print(self.joint_offsets)
-            print("best offsets               : ", [f"{x:.3f}" for x in self.joint_offsets])
-            print(
-                "best offsets function of pi: ["
-                + ", ".join([f"{int(np.round(x/(np.pi/2)))}*np.pi/2" for x in self.joint_offsets])
-                + " ]",
-            )
-    
+            self.get_logger().info(f"Current joint positions: {format_array(curr_joints)}")
+            self.get_logger().info(f"Best offsets           : {format_array(self.joint_offsets)}")
+
     def _match_start_pos(self):
         """
         Waits until the leader arm is manually moved to roughly the same configuration as the 
         follower arm before the follower arm starts mirroring the leader arm. 
         """
-        curr_pos, _, _, _ = self.get_leader_joint_states()
-        while (np.linalg.norm(curr_pos - self.initial_match_joint_pos[0:self.num_arm_joints]) > 0.6):
-            current_joint_error = np.linalg.norm(
-                curr_pos - self.initial_match_joint_pos[0:self.num_arm_joints]
-            )
-            self.get_logger().info(
-                f"FACTR TELEOP {self.name}: Please match starting joint pos. Current error: {current_joint_error}"
-            )
-            curr_pos, _, _, _ = self.get_leader_joint_states()
-            time.sleep(0.5)
-        self.get_logger().info(f"FACTR TELEOP {self.name}: Initial joint position matched.")
+        curr_arm_pos, _, curr_gripper_pos, _ = self.get_leader_joint_states()
+        curr_pos = np.append(curr_arm_pos, curr_gripper_pos)
+
+        tgt_pos = self.initial_match_joint_pos
+
+        self.get_logger().info(
+            "Please match starting joint pos. "
+            f"({_ANSI_GREEN}●{_ANSI_RESET} : current, "
+            f"{_ANSI_MAGENTA}◆{_ANSI_RESET} : target, "
+            f"{_ANSI_YELLOW}●{_ANSI_RESET} : matched)"
+        )
+
+        try:
+            while np.linalg.norm(curr_pos - tgt_pos) > self.match_threshold:
+                self._render_joint_match_bars(curr_pos, tgt_pos, self.match_threshold)
+
+                self._control_without_feedback()
+
+                curr_arm_pos, _, curr_gripper_pos, _ = self.get_leader_joint_states()
+                curr_pos = np.append(curr_arm_pos, curr_gripper_pos)
+
+                time.sleep(self.dt)
+
+            self.get_logger().info("Initial joint position matched.")
+        except:
+            self.shut_down()
+
+            raise
+
+    def _render_joint_match_bars(self, values, targets, threshold, width=61):
+        """
+        Render an in-place terminal visualization of current and target joints.
+        """
+        lowers = np.append(self.arm_joint_limits_min, self.gripper_limit_min)
+        uppers = np.append(self.arm_joint_limits_max, self.gripper_limit_max)
+
+        lines = []
+
+        for index, (val, tgt, lower, upper) in enumerate(zip(values, targets, lowers, uppers)):
+            bar = joint_position_bar(val, tgt, lower, upper, width)
+
+            lines.append(f"Joint {index + 1} {bar}  Current: {val:+.3f},  Target: {tgt:+.3f} rad")
+
+        previous_line_count = getattr(self, "_joint_match_display_lines", 0)
+
+        if previous_line_count:
+            sys.stdout.write(f"\033[{previous_line_count}F")
+
+        sys.stdout.write(
+            "\r\033[2K"
+            f"Current error: {np.linalg.norm(values - targets):.3f}, Threshold: {threshold:.3f}\n"
+        )
+        sys.stdout.write("\n".join(f"\r\033[2K{line}" for line in lines) + "\n")
+        sys.stdout.flush()
+
+        self._joint_match_display_lines = len(lines) + 1
+
+    def _control_without_feedback(self):
+        leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel = \
+            self.get_leader_joint_states()
+
+        torque_arm = np.zeros(self.num_arm_joints)
+        torque_l, torque_gripper = self.joint_limit_barrier(
+            leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel
+        )
+        torque_arm += torque_l
+        torque_arm += self.null_space_regulation(leader_arm_pos, leader_arm_vel)
+
+        if self.enable_gravity_comp:
+            torque_arm += self.gravity_compensation(leader_arm_pos, leader_arm_vel)
+            torque_arm += self.friction_compensation(leader_arm_vel)
+
+        self.set_leader_joint_torque(torque_arm, torque_gripper)
 
     def shut_down(self):
         """
@@ -387,7 +455,7 @@ class FACTRTeleop(Node, ABC):
         )
         J_dagger = np.linalg.pinv(J)
         null_space_projector = np.eye(self.num_arm_joints) - J_dagger @ J
-        q_error = arm_joint_pos - self.null_space_joint_target[0:self.num_arm_joints]
+        q_error = arm_joint_pos - self.null_space_joint_target
         tau_n = null_space_projector @ (-self.null_space_kp*q_error-self.null_space_kd*arm_joint_vel)
         return tau_n
     
@@ -530,3 +598,39 @@ class FACTRTeleop(Node, ABC):
             NotImplementedError: If the method is not implemented in a subclass.
         """
         pass
+
+
+def format_array(arr):
+    return np.array2string(arr, separator=', ', formatter={'float_kind': lambda x: f'{x: .3f}'})
+
+
+_ANSI_RESET = "\033[0m"
+_ANSI_GREEN = "\033[92m"
+_ANSI_MAGENTA = "\033[95m"
+_ANSI_YELLOW = "\033[93m"
+
+
+def joint_position_bar(curr_pos, tgt_pos, lower, upper, width=61):
+    """Return a fixed-width joint range bar with current and target markers."""
+    if width < 2:
+        raise ValueError("Joint position bar width must be at least 2")
+    if upper <= lower:
+        raise ValueError("Joint position bar upper limit must be greater than lower limit")
+
+    def marker_index(value):
+        ratio = np.clip((value - lower) / (upper - lower), 0.0, 1.0)
+
+        return int(round(ratio * (width - 1)))
+
+    curr_idx = marker_index(curr_pos)
+    tgt_idx = marker_index(tgt_pos)
+
+    cells = ["-"] * width
+
+    if curr_idx == tgt_idx:
+        cells[curr_idx] = f"{_ANSI_YELLOW}●{_ANSI_RESET}"
+    else:
+        cells[curr_idx] = f"{_ANSI_GREEN}●{_ANSI_RESET}"
+        cells[tgt_idx] = f"{_ANSI_MAGENTA}◆{_ANSI_RESET}"
+
+    return "[" + "".join(cells) + "]"

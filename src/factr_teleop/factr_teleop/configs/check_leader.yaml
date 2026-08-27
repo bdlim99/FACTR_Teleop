@@ -1,0 +1,11 @@
+arm_teleop:
+  initialization:
+    # The leader arm must be brought to this joint position before start
+    initial_match_joint_pos: [0.0, -0.7854, 0.0, -2.3562, 0.0, 1.5708, 0.0, 0.0]
+    match_threshold: 0.3
+
+controller:
+  torque_feedback:
+    enable: False
+  null_space_regulation:
+    null_space_joint_target: [0.0, -0.7854, 0.0, -2.3562, 0.0, 1.5708, 0.0]
