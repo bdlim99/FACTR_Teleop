@@ -29,6 +29,7 @@ from dynamixel_sdk.group_sync_write import GroupSyncWrite
 from dynamixel_sdk.packet_handler import PacketHandler
 from dynamixel_sdk.port_handler import PortHandler
 from dynamixel_sdk.robotis_def import (
+    BROADCAST_ID,
     COMM_SUCCESS,
     DXL_HIBYTE,
     DXL_HIWORD,
@@ -134,6 +135,30 @@ class DynamixelDriver(DynamixelDriverProtocol):
     def set_torque_mode(self, enable: bool):
         torque_value = TORQUE_ENABLE if enable else TORQUE_DISABLE
         with self._lock:
+            if not enable:
+                # SIGINT can interrupt an SDK transaction before it clears the
+                # internal busy flag.  Cleanup is serialized by this lock, so
+                # it is safe to recover the port before the emergency write.
+                # Disable every motor with one broadcast write.  A broadcast
+                # has no status response, avoiding shutdown failures caused by
+                # waiting for an individual motor's reply after SIGINT.
+                for _ in range(3):
+                    self._portHandler.is_using = False
+                    dxl_comm_result = self._packetHandler.write1ByteTxOnly(
+                        self._portHandler,
+                        BROADCAST_ID,
+                        ADDR_TORQUE_ENABLE,
+                        torque_value,
+                    )
+                    if dxl_comm_result == COMM_SUCCESS:
+                        break
+                else:
+                    detail = self._packetHandler.getTxRxResult(dxl_comm_result)
+                    raise RuntimeError(f"Failed to broadcast torque disable: {detail}")
+
+                self._torque_enabled = False
+                return
+
             for dxl_id in self._ids:
                 dxl_comm_result, dxl_error = self._packetHandler.write1ByteTxRx(
                     self._portHandler, dxl_id, ADDR_TORQUE_ENABLE, torque_value

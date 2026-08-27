@@ -252,7 +252,7 @@ class FACTRTeleop(Node, ABC):
         """
         Disables all torque on the leader arm and gripper during node shutdown.
         """
-        self.set_leader_joint_torque(np.zeros(self.num_arm_joints), 0.0)
+        # self.set_leader_joint_torque(np.zeros(self.num_arm_joints), 0.0)
         self.driver.set_torque_mode(False)
 
     def get_leader_joint_states(self):
