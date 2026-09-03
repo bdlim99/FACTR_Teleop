@@ -70,8 +70,8 @@ class FACTRTeleop(Node, ABC):
     methods must be implemented by subclasses for handling communication between the 
     leader and follower arms, as well as force-feedback for the leader gripper.
     """
-    def __init__(self):
-        super().__init__('factr_teleop')
+    def __init__(self, **kwargs):
+        super().__init__('factr_teleop', **kwargs)
 
         config_file_name = self.declare_parameter('config_file', '').get_parameter_value().string_value
 
