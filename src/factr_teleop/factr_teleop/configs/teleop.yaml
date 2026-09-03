@@ -1,0 +1,14 @@
+arm_teleop:
+  initialization:
+    # The leader arm must be brought to follower's joint position before starting the teleoperation
+    initial_match_joint_pos: follower_pos
+    match_threshold: 0.15
+
+controller:
+  torque_feedback:
+    enable: True
+    gain: 3.0
+    damping: 0.0
+    motor_scalar: 94.5652173913
+  null_space_regulation:
+    null_space_joint_target: follower_pos

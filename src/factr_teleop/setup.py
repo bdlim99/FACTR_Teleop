@@ -19,6 +19,6 @@ setup(
     tests_require=['pytest'],
     entry_points={'console_scripts': [
         'check_leader = factr_teleop.check_leader:main',
-        'teleop = factr_teleop.teleop:main',
+        'teleop = factr_teleop.teleop:main'
     ]}
 )

@@ -21,13 +21,19 @@ import pinocchio as pin
 import numpy as np
 from omegaconf import OmegaConf
 import os
+import rclpy
+from rclpy.duration import Duration
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 import subprocess
 import sys
 import time
 
 from factr_teleop.dynamixel.driver import DynamixelDriver
 from python_utils.utils import get_workspace_root
+
+ARM_JOINT_NAMES = [f'panda_joint{i}' for i in range(1, 8)]
+MAX_FINGER_POSITION = 0.04
 
 
 def find_ttyusb(port_name):
@@ -90,18 +96,22 @@ class FACTRTeleop(Node, ABC):
         self.arm_joint_limits_max = np.array(self.config["arm_teleop"]["arm_joint_limits_max"]) - self.safety_margin
         self.arm_joint_limits_min = np.array(self.config["arm_teleop"]["arm_joint_limits_min"]) + self.safety_margin
         self.calibration_joint_pos = np.array(self.config["arm_teleop"]["initialization"]["calibration_joint_pos"])
-        self.initial_match_joint_pos = np.array(self.config["arm_teleop"]["initialization"]["initial_match_joint_pos"])
+        self.initial_match_joint_pos = self.config["arm_teleop"]["initialization"]["initial_match_joint_pos"]
         self.match_threshold = self.config["arm_teleop"]["initialization"]["match_threshold"]
+
         assert self.num_arm_joints == len(self.arm_joint_limits_max) == len(self.arm_joint_limits_min), \
             "num_arm_joints and the length of arm joint limits must be the same"
-        assert self.num_arm_joints == len(self.calibration_joint_pos) == len(self.initial_match_joint_pos), \
-            "num_arm_joints and the length of calibration_joint_pos and initial_match_joint_pos must be the same"
-        
+
         # leader gripper parameters
         self.gripper_limit_min = 0.0
         self.gripper_limit_max = self.config["gripper_teleop"]["actuation_range"]
         self.gripper_pos_prev = 0.0
         self.gripper_pos = 0.0
+
+        if self.initial_match_joint_pos == 'follower_pos':
+            self.initial_match_joint_pos = self._get_follower_pos()
+
+        self.initial_match_joint_pos = np.array(self.initial_match_joint_pos)
 
         # gravity comp
         self.enable_gravity_comp = self.config["controller"]["gravity_comp"]["enable"]
@@ -115,7 +125,23 @@ class FACTRTeleop(Node, ABC):
         self.joint_limit_kp = self.config["controller"]["joint_limit_barrier"]["kp"]
         self.joint_limit_kd = self.config["controller"]["joint_limit_barrier"]["kd"]
         # null space regulation
-        self.null_space_joint_target = np.array(self.config["controller"]["null_space_regulation"]["null_space_joint_target"])
+        self.null_space_joint_target = self.config["controller"]["null_space_regulation"]["null_space_joint_target"]
+
+        if self.null_space_joint_target == 'follower_pos':
+            self.null_space_joint_target = self.initial_match_joint_pos[:-1]
+
+            def update_null_space_joint_target(msg):
+                for i, joint_name in enumerate(ARM_JOINT_NAMES):
+                    j = msg.name.index(joint_name)
+
+                    self.null_space_joint_target[i] = msg.position[j]
+
+            self.create_subscription(
+                JointState, '/franka/joint_states', update_null_space_joint_target, 10
+            )
+        else:
+            self.null_space_joint_target = np.array(self.null_space_joint_target)
+
         self.null_space_kp = self.config["controller"]["null_space_regulation"]["kp"]
         self.null_space_kd = self.config["controller"]["null_space_regulation"]["kd"]
         # torque feedback
@@ -236,6 +262,60 @@ class FACTRTeleop(Node, ABC):
         if verbose:
             self.get_logger().info(f"Current joint positions: {format_array(curr_joints)}")
             self.get_logger().info(f"Best offsets           : {format_array(self.joint_offsets)}")
+
+    def _get_follower_pos(self):
+        """
+        Retrieve the follower's joint positions and raise an exception if the follower's joint
+        positions cannot be retrieved.
+        """
+        self.follower_q = None
+
+        def update_follower_joint_pos(msg):
+            self.follower_q = np.zeros(self.num_arm_joints + 1)
+
+            for i, joint_name in enumerate(ARM_JOINT_NAMES + ['panda_finger_joint1']):
+                j = msg.name.index(joint_name)
+
+                self.follower_q[i] = msg.position[j]
+
+        self.follower_joint_pos_sub = self.create_subscription(
+            JointState, '/joint_states', update_follower_joint_pos, 10
+        )
+
+        self.get_logger().info("Waiting for follower's joint positions...")
+
+        deadline = self.get_clock().now() + Duration(seconds=10)
+
+        while self.follower_q is None and rclpy.ok() and self.get_clock().now() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.1)
+
+        self.destroy_subscription(self.follower_joint_pos_sub)
+
+        if self.follower_q is None:
+            self.shut_down()
+            raise Exception("Failed to retrieve follower's joint positions.")
+
+        self.get_logger().info(f"Follower's joint positions retrieved: {format_array(self.follower_q)}")
+
+        if (self.follower_q[:-1] < self.arm_joint_limits_min).any():
+            self.shut_down()
+            raise Exception(
+                "Follower's joint positions are below the minimum joint limits. \n"
+                f"Joint positions: {format_array(self.follower_q[:-1])}\n"
+                f"Lower limits   : {format_array(self.arm_joint_limits_min)}"
+            )
+        if (self.follower_q[:-1] > self.arm_joint_limits_max).any():
+            self.shut_down()
+            raise Exception(
+                "Follower's joint positions are above the maximum joint limits. \n"
+                f"Joint positions: {format_array(self.follower_q[:-1])}\n"
+                f"Upper limits   : {format_array(self.arm_joint_limits_max)}"
+            )
+
+        follower_q = self.follower_q.copy()
+        follower_q[-1] = follower_q[-1] / MAX_FINGER_POSITION * self.gripper_limit_max
+
+        return follower_q
 
     def _match_start_pos(self):
         """
