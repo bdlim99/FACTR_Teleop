@@ -10,7 +10,7 @@ MAX_FINGER_POSITION = 0.04
 
 class LeaderChecker(FACTRTeleop):
     def set_up_communication(self):
-        self.joint_states_pub = self.create_publisher(JointState, '/joint_states', 10)
+        self.joint_states_pub = self.create_publisher(JointState, '/joint_states', qos_profile=10)
 
     def update_communication(self, leader_arm_pos, leader_gripper_pos):
         gripper_pos = max(0.0, min(1.0, leader_gripper_pos / self.gripper_limit_max))

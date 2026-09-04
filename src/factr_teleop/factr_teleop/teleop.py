@@ -40,7 +40,7 @@ class Teleoperator(FACTRTeleop):
         if self.panda_ee_frame_id >= len(self.panda_pin_model.frames):
             raise ValueError("panda_hand_tcp frame not found.")
 
-        self.des_pose_sub = self.create_publisher(PoseStamped, self.des_topic_name, 10)
+        self.des_pose_sub = self.create_publisher(PoseStamped, self.des_topic_name, qos_profile=10)
 
         self.external_torque = np.zeros(self.num_arm_joints)
 
