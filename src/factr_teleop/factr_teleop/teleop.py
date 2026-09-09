@@ -81,23 +81,24 @@ class Teleoperator(FACTRTeleop):
 
         self.des_pose_sub.publish(msg)
 
-        if self.last_gripper_goal != 'grasp' and leader_gripper_pos < 0.45 * self.gripper_limit_max:
-            goal = Grasp.Goal()
-            goal.width = 0.0
-            goal.force = GRASP_FORCE
-            goal.speed = GRASP_SPEED
-            goal.epsilon.inner = GRASP_EPSILON_INNER
-            goal.epsilon.outer = GRASP_EPSILON_OUTER
+        if self.enable_gripper_teleop:
+            if self.last_gripper_goal != 'grasp' and leader_gripper_pos < 0.45 * self.gripper_limit_max:
+                goal = Grasp.Goal()
+                goal.width = 0.0
+                goal.force = GRASP_FORCE
+                goal.speed = GRASP_SPEED
+                goal.epsilon.inner = GRASP_EPSILON_INNER
+                goal.epsilon.outer = GRASP_EPSILON_OUTER
 
-            self.grasp_client.send_goal_async(goal)
-            self.last_gripper_goal = 'grasp'
-        elif self.last_gripper_goal != 'move' and leader_gripper_pos > 0.55 * self.gripper_limit_max:
-            goal = Move.Goal()
-            goal.width = 0.08
-            goal.speed = GRASP_SPEED
+                self.grasp_client.send_goal_async(goal)
+                self.last_gripper_goal = 'grasp'
+            elif self.last_gripper_goal != 'move' and leader_gripper_pos > 0.55 * self.gripper_limit_max:
+                goal = Move.Goal()
+                goal.width = 0.08
+                goal.speed = GRASP_SPEED
 
-            self.move_client.send_goal_async(goal)
-            self.last_gripper_goal = 'move'
+                self.move_client.send_goal_async(goal)
+                self.last_gripper_goal = 'move'
 
     def get_leader_arm_external_joint_torque(self):
         return self.external_torque

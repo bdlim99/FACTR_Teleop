@@ -103,6 +103,7 @@ class FACTRTeleop(Node, ABC):
             "num_arm_joints and the length of arm joint limits must be the same"
 
         # leader gripper parameters
+        self.enable_gripper_teleop = self.config["gripper_teleop"]["enable"]
         self.gripper_limit_min = 0.0
         self.gripper_limit_max = self.config["gripper_teleop"]["actuation_range"]
         self.gripper_pos_prev = 0.0

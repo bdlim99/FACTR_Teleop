@@ -4,6 +4,9 @@ arm_teleop:
     initial_match_joint_pos: follower_pos
     match_threshold: 0.15
 
+gripper_teleop:
+  enable: False
+
 controller:
   torque_feedback:
     enable: True

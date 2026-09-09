@@ -21,6 +21,7 @@ arm_teleop:
     calibration_joint_pos: [0.0, 0.0, 0.0, -1.5708, 0.0, 1.5708, 0.0]
 
 gripper_teleop:
+  enable: True
   # The maximum range (in rad) of the leader gripper trigger
   actuation_range: 0.8
 
