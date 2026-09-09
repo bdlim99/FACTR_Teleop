@@ -25,6 +25,7 @@ import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+import shutil
 import subprocess
 import sys
 import time
@@ -328,23 +329,35 @@ class FACTRTeleop(Node, ABC):
 
         tgt_pos = self.initial_match_joint_pos
 
-        self.get_logger().info(
-            "Please match starting joint pos. "
-            f"({_ANSI_GREEN}●{_ANSI_RESET} : current, "
-            f"{_ANSI_MAGENTA}◆{_ANSI_RESET} : target, "
-            f"{_ANSI_YELLOW}●{_ANSI_RESET} : matched)"
-        )
-
         try:
-            while np.linalg.norm(curr_pos - tgt_pos) > self.match_threshold:
-                self._render_joint_match_bars(curr_pos, tgt_pos, self.match_threshold)
+            # Bypass launch's stdout prefixes; measure and draw on the same tty.
+            try:
+                terminal = open('/dev/tty', 'w', buffering=1)
+            except OSError:
+                terminal = sys.stdout
+            self._joint_match_terminal = terminal
+            try:
+                # Use a separate screen so resizing cannot leave old bars in scrollback.
+                terminal.write("\033[?1049h\033[?25l\033[2J\033[H")
+                terminal.flush()
+                while np.linalg.norm(curr_pos - tgt_pos) > self.match_threshold:
+                    self._render_joint_match_bars(curr_pos, tgt_pos, self.match_threshold)
 
-                self._control_without_feedback()
+                    self._control_without_feedback()
 
-                curr_arm_pos, _, curr_gripper_pos, _ = self.get_leader_joint_states()
-                curr_pos = np.append(curr_arm_pos, curr_gripper_pos)
+                    curr_arm_pos, _, curr_gripper_pos, _ = self.get_leader_joint_states()
+                    curr_pos = np.append(curr_arm_pos, curr_gripper_pos)
 
-                time.sleep(self.dt)
+                    time.sleep(self.dt)
+            finally:
+                # Restore the original screen/cursor on completion, errors or Ctrl-C.
+                try:
+                    terminal.write("\033[0m\033[?25h\033[?1049l")
+                    terminal.flush()
+                finally:
+                    del self._joint_match_terminal
+                    if terminal is not sys.stdout:
+                        terminal.close()
 
             self.get_logger().info("Initial joint position matched.")
         except:
@@ -352,33 +365,50 @@ class FACTRTeleop(Node, ABC):
 
             raise
 
-    def _render_joint_match_bars(self, values, targets, threshold, width=61):
+    def _render_joint_match_bars(self, values, targets, threshold):
         """
         Render an in-place terminal visualization of current and target joints.
         """
         lowers = np.append(self.arm_joint_limits_min, self.gripper_limit_min)
         uppers = np.append(self.arm_joint_limits_max, self.gripper_limit_max)
+        terminal = getattr(self, '_joint_match_terminal', sys.stdout)
+        columns = terminal_columns(terminal)
+        available = max(0, columns - 1)  # Avoid terminal auto-wrap.
+        joint_rows = list(zip(values, targets, lowers, uppers))
+        prefixes = [f"Joint {index + 1} " for index in range(len(joint_rows))]
+        suffixes = [
+            f"  Current: {val:+.3f},  Target: {tgt:+.3f} rad"
+            for val, tgt, _, _ in joint_rows
+        ]
+        prefix_width = max(map(len, prefixes), default=0)
+        suffix_width = max(map(len, suffixes), default=0)
+        width = available - prefix_width - 2 - suffix_width
 
         lines = []
 
-        for index, (val, tgt, lower, upper) in enumerate(zip(values, targets, lowers, uppers)):
+        for prefix, suffix, (val, tgt, lower, upper) in zip(prefixes, suffixes, joint_rows):
+            if width < 2:
+                lines.append(f"{prefix}{suffix}"[:available])
+                continue
             bar = joint_position_bar(val, tgt, lower, upper, width)
+            lines.append(f"{prefix:<{prefix_width}}{bar}{suffix}")
 
-            lines.append(f"Joint {index + 1} {bar}  Current: {val:+.3f},  Target: {tgt:+.3f} rad")
-
-        previous_line_count = getattr(self, "_joint_match_display_lines", 0)
-
-        if previous_line_count:
-            sys.stdout.write(f"\033[{previous_line_count}F")
-
-        sys.stdout.write(
-            "\r\033[2K"
-            f"Current error: {np.linalg.norm(values - targets):.3f}, Threshold: {threshold:.3f}\n"
-        )
-        sys.stdout.write("\n".join(f"\r\033[2K{line}" for line in lines) + "\n")
-        sys.stdout.flush()
-
-        self._joint_match_display_lines = len(lines) + 1
+        header = f"Current error: {np.linalg.norm(values - targets):.3f}, Threshold: {threshold:.3f}"
+        title = (
+            'Please match starting joint pos. '
+            '(● : current, ◆ : target, ● : matched)'
+        )[:available]
+        # Clip visible text before adding ANSI colors so escape sequences stay intact.
+        for marker, label, color in (
+            ('●', 'current', _ANSI_GREEN),
+            ('◆', 'target', _ANSI_MAGENTA),
+            ('●', 'matched', _ANSI_YELLOW),
+        ):
+            title = title.replace(f'{marker} : {label}', f'{color}{marker}{_ANSI_RESET} : {label}')
+        frame = [title, header[:available], *lines]
+        # Absolute positioning remains valid after terminal reflow on resize.
+        terminal.write("\033[H" + "\r\n".join(f"\033[2K{line}" for line in frame) + "\033[J")
+        terminal.flush()
 
     def _control_without_feedback(self):
         leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel = \
@@ -689,6 +719,28 @@ _ANSI_RESET = "\033[0m"
 _ANSI_GREEN = "\033[92m"
 _ANSI_MAGENTA = "\033[95m"
 _ANSI_YELLOW = "\033[93m"
+
+
+def terminal_columns(terminal=None):
+    """Read live window width, avoiding stale COLUMNS and unsized launch PTYs."""
+    try:
+        columns = os.get_terminal_size((terminal if terminal is not None else sys.stdout).fileno()).columns
+        if columns > 0:
+            return columns
+    except (AttributeError, ValueError, OSError):
+        pass
+
+    # Launch may redirect stdout to a pipe/PTY while retaining the real tty.
+    try:
+        with open('/dev/tty', 'rb', buffering=0) as terminal:
+            columns = os.get_terminal_size(terminal.fileno()).columns
+            if columns > 0:
+                return columns
+    except OSError:
+        pass
+
+    columns = shutil.get_terminal_size().columns
+    return columns if columns > 0 else 80
 
 
 def joint_position_bar(curr_pos, tgt_pos, lower, upper, width=61):
