@@ -77,7 +77,11 @@ class FACTRTeleop(Node, ABC):
         config_file_name = self.declare_parameter('config_file', '').get_parameter_value().string_value
 
         base_config_path = os.path.join(get_workspace_root(), "src/factr_teleop/factr_teleop/configs/base_config.yaml")
-        custom_config_path = os.path.join(get_workspace_root(), f"src/factr_teleop/factr_teleop/configs/{config_file_name}")
+
+        if config_file_name[0] == '/':
+            custom_config_path = config_file_name
+        else:
+            custom_config_path = os.path.join(get_workspace_root(), f"src/factr_teleop/factr_teleop/configs/{config_file_name}")
 
         with open(base_config_path, 'r') as base_config_file:
             base_config = OmegaConf.load(base_config_file)
