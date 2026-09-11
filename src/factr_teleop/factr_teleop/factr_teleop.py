@@ -329,9 +329,13 @@ class FACTRTeleop(Node, ABC):
         follower arm before the follower arm starts mirroring the leader arm. 
         """
         curr_arm_pos, _, curr_gripper_pos, _ = self.get_leader_joint_states()
-        curr_pos = np.append(curr_arm_pos, curr_gripper_pos)
 
-        tgt_pos = self.initial_match_joint_pos
+        if self.enable_gripper_teleop:
+            curr_pos = np.append(curr_arm_pos, curr_gripper_pos)
+            tgt_pos = self.initial_match_joint_pos
+        else:
+            curr_pos = curr_arm_pos
+            tgt_pos = self.initial_match_joint_pos[:-1]
 
         try:
             # Bypass launch's stdout prefixes; measure and draw on the same tty.
@@ -350,7 +354,11 @@ class FACTRTeleop(Node, ABC):
                     self._control_without_feedback()
 
                     curr_arm_pos, _, curr_gripper_pos, _ = self.get_leader_joint_states()
-                    curr_pos = np.append(curr_arm_pos, curr_gripper_pos)
+
+                    if self.enable_gripper_teleop:
+                        curr_pos = np.append(curr_arm_pos, curr_gripper_pos)
+                    else:
+                        curr_pos = curr_arm_pos
 
                     time.sleep(self.dt)
             finally:
