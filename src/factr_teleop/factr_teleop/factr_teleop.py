@@ -716,7 +716,7 @@ class FACTRTeleop(Node, ABC):
 
 
 def format_array(arr):
-    return np.array2string(arr, separator=', ', formatter={'float_kind': lambda x: f'{x: .3f}'})
+    return f"[{', '.join(f'{x: .3f}' for x in arr)}]"
 
 
 _ANSI_RESET = "\033[0m"
