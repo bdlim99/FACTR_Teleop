@@ -8,6 +8,8 @@ import pinocchio as pin
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
+from rclpy.signals import SignalHandlerOptions
+import signal
 import xacro
 
 from factr_teleop.factr_teleop import FACTRTeleop
@@ -111,7 +113,8 @@ class Teleoperator(FACTRTeleop):
 
 
 def main():
-    rclpy.init()
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
 
     node = None
 
