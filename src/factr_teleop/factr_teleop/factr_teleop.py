@@ -181,6 +181,10 @@ class FACTRTeleop(Node, ABC):
         self.joint_signs = np.array(self.config["dynamixel"]["joint_signs"], dtype=float)
         assert self.num_motors == len(self.joint_signs), \
             "The number of motors and the number of joint signs must be the same"
+        self.joint_offset_corrections = \
+            np.array(self.config["dynamixel"]["joint_offset_corrections"], dtype=float)
+        assert self.num_motors - 1 == len(self.joint_offset_corrections), \
+            "The number of arm motors and the number of joint offset corrections must be the same"
         self.dynamixel_port = "/dev/serial/by-id/" + self.config["dynamixel"]["dynamixel_port"]
 
         # checks of the latency timer on ttyUSB of the corresponding port is 1
@@ -455,7 +459,7 @@ class FACTRTeleop(Node, ABC):
         joint_pos, joint_vel = self.driver.get_positions_and_velocities()
         joint_pos_arm = (
             joint_pos[0:self.num_arm_joints] - self.joint_offsets[0:self.num_arm_joints]
-        ) * self.joint_signs[0:self.num_arm_joints]
+        ) * self.joint_signs[0:self.num_arm_joints] - self.joint_offset_corrections
         self.gripper_pos = (joint_pos[-1] - self.joint_offsets[-1]) * self.joint_signs[-1]
         joint_vel_arm = joint_vel[0:self.num_arm_joints] * self.joint_signs[0:self.num_arm_joints]
         

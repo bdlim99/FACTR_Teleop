@@ -8,6 +8,8 @@ dynamixel:
   ]
   # Servo joint directions to match that of the leader arm
   joint_signs: [1, 1, 1, -1, 1, -1, 1, -1]
+  # Fine per-joint offset corrections
+  joint_offset_corrections: [0.0, -0.075, 0.0, 0.035, 0.0, 0.0, -0.7854]
 
 arm_teleop:
   # URDF used for creating leader arm dynamics model to compute gravity compensation
