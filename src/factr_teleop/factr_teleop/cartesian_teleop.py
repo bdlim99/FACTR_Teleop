@@ -20,7 +20,7 @@ GRASP_EPSILON_INNER = 0.0
 GRASP_EPSILON_OUTER = 0.08
 
 
-class Teleoperator(FACTRTeleop):
+class CartesianTeleoperator(FACTRTeleop):
     def set_up_communication(self):
         special_connection = \
             self.declare_parameter('special_connection', '').get_parameter_value().string_value
@@ -119,7 +119,7 @@ def main():
     node = None
 
     try:
-        node = Teleoperator()
+        node = CartesianTeleoperator()
 
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
